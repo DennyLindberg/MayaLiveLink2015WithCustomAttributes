@@ -7,6 +7,8 @@ This is a "patch" for Epic's official Maya Live Link plugin.
 
 Either copy the files from the Binaries folder or follow the instructions below to compile from scratch.
 
+<p align="center"><img src="preview.png"></p>
+
 # Compiling for versions newer than Maya 2015
 Copy all the files except the binaries and replace in the MayaLiveLinkPlugin folder. Compile as usual.
 
