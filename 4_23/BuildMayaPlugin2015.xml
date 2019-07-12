@@ -1,0 +1,23 @@
+<?xml version='1.0' ?>
+<BuildGraph xmlns="http://www.epicgames.com/BuildGraph" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.epicgames.com/BuildGraph ../../../Engine/Build/Graph/Schema.xsd" >
+  <Property Name="LocalSourceDir" Value="$(RootDir)\Engine\Source\Programs\MayaLiveLinkPlugin"/>
+  <Property Name="LocalStagingDir" Value="$(LocalSourceDir)\Staging"/>
+  <Property Name="LocalBinaryDir" Value="$(RootDir)\Engine\Binaries\Win64"/>
+   <Property Name="LocalExtraDir" Value="$(RootDir)\Engine\Extras\MayaLiveLink"/>
+  
+  <Agent Name="MayaLiveLinkPlugin" Type="Win64">
+    <Node Name="Compile UnrealHeaderTool Win64">
+      <Compile Target="UnrealHeaderTool" Platform="Win64" Configuration="Development" Arguments="-precompile -nodebuginfo"/>
+    </Node>
+
+	<Node Name="Compile Maya 2015 Win64" Requires="Compile UnrealHeaderTool Win64">
+      <Compile Target="MayaLiveLinkPlugin2015" Platform="Win64" Configuration="Development" />
+    </Node>
+
+	<Node Name="Stage Maya Plugin Module" Requires="Compile Maya 2015 Win64">
+		<Copy From="$(LocalBinaryDir)\MayaLiveLinkPlugin2015.mll" To="$(LocalSourceDir)\output\MayaLiveLinkPlugin2015.mll" />
+		<Copy From="$(LocalSourceDir)\MayaLiveLinkUI.py" To="$(LocalSourceDir)\output\MayaLiveLinkUI.py" />
+		<Copy From="$(LocalSourceDir)\LiveLink.mod" To="$(LocalSourceDir)\output\LiveLink.mod" />
+	</Node>
+  </Agent>
+</BuildGraph>
