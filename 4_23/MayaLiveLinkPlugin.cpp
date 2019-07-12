@@ -248,7 +248,7 @@ protected:
 
 		bool HasDirtyProperties() const
 		{
-			return (Name != Plug.name()) || (bRelevantForSync != IsPlugRelevantForSync(Plug));
+			return (Name != Plug.partialName()) || (bRelevantForSync != IsPlugRelevantForSync(Plug));
 		}
 	};
 
@@ -328,7 +328,7 @@ public:
 				AnimationFrameData.PropertyValues.Add(UserDefinedAttributes[i].Plug.asFloat());
 				
 				// Enable for print debug
-				//MGlobal::displayInfo(MString("LiveLink sent: ") + UserDefinedAttributes[i].Plug.name() + ": " + AnimationFrameData.PropertyValues.Last());
+				//MGlobal::displayInfo(MString("LiveLink sent: ") + UserDefinedAttributes[i].Plug.partialName() + ": " + AnimationFrameData.PropertyValues.Last());
 			}
 		}
 	}
