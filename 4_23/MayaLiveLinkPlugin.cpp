@@ -101,7 +101,7 @@ void SetMatrixRow(double* Row, MVector Vec)
 double RadToDeg(double Rad)
 {
 	const double E_PI = 3.1415926535897932384626433832795028841971693993751058209749445923078164062;
-	return (Rad*180.0) / E_PI;
+	return (Rad * 180.0) / E_PI;
 }
 
 MMatrix GetScale(const MFnIkJoint& Joint)
@@ -240,33 +240,55 @@ struct FStreamHierarchy
 	{}
 };
 
-class MayaSyncedUserDefinedAttributes
+/*
+*	Utility class for keeping track of user defined attributes from the
+*	channel box in Maya.
+*/
+class FStreamedUserDefinedAttributes
 {
 protected:
-	struct AttributeInfo
+	/*
+	*	This struct is used to cache each attribute MPlug for the streamed 
+	* 	user defined attributes. The struct contains member variables to
+	*	allow dirty-checking to help trigger a refresh of static data
+	*	whenever an attribute property is modified in the channel box 
+	*	in Maya.
+	*/
+	struct FAttributeInfo
 	{
-		// MPlug is used to read values from attributes in Maya
+		// An MPlug is a connection which supports reading values and properties from object attributes
 		MPlug Plug;
-		MString Name = "";
-		bool bRelevantForSync = false;
+		inline float Value() { return Plug.asFloat(); }
 
+		// The cached partialName of the attribute
+		MString PartialName = "";
+
+		// Determines if an attribute should be streamed via Live Link (see IsPlugRelevantForStream)
+		bool bRelevantForStream = false;
+
+		// Determines if an attribute property has been modified by the user
 		bool HasDirtyProperties() const
 		{
-			return (Name != Plug.partialName()) || (bRelevantForSync != IsPlugRelevantForSync(Plug));
+			return (PartialName != Plug.partialName()) || (bRelevantForStream != IsPlugRelevantForStream(Plug));
 		}
 	};
 
-	int AllRootAttributesCount = 0;
-	TArray<AttributeInfo> UserDefinedAttributes;
+	// The total number of attributes available on the root joint of the streamed hierarchy
+	int NumAttributesOnRootJoint = 0;
+
+	// The sub-set of attributes added by the user to the root joint
+	TArray<FAttributeInfo> UserDefinedAttributes;
 
 public:
-	static bool IsPlugRelevantForSync(MPlug Plug)
+	/*
+	*	Determines if a user defined attribute should be streamed via Live Link.
+	*	Note that MPlug is used for querying properties and not MFnAttribute. 
+	*	Even though both has the same functions defined, only MPlug replicates the 
+	*	behavior of getAttr in MEL. MFnAttribute behaves as attributeQuery in MEL,
+	*	which do not report the state of the attribute that is needed.
+	*/
+	static bool IsPlugRelevantForStream(MPlug Plug)
 	{
-		/*
-			Warning: MFnAttribute.isKeyable() and MPlug.isKeyable() do NOT return the same results.
-			Always check the MPlug properties instead of the MFnAttribute.
-			MPlug properties behave like getAttr in MEL.
-		*/
 		if (Plug.isLocked())
 		{
 			return false;
@@ -277,16 +299,23 @@ public:
 		}
 	}
 
-	int CountUserDefinedAttributes(MFnIkJoint& RootJointObject)
+	/*
+	*	Returns the number of custom user defined attributes on the joint.
+	*	Attributes are index-based and custom attributes are added at the
+	*	end of the range. User defined attributes are marked isDynamic().
+	*/
+	int NumUserDefinedAttributesOnJoint(MFnIkJoint& Joint)
 	{
-		int TotalAttributeCount = RootJointObject.attributeCount();
-
 		int UserDefinedAttributeCount = 0;
-		int LastAttributeIndex = TotalAttributeCount - 1;
+		int LastAttributeIndex = Joint.attributeCount() - 1;
 		for (int i = LastAttributeIndex; i >= 0; i--)
 		{
-			bool IsUserDefined = static_cast<MFnAttribute>(RootJointObject.attribute(i)).isDynamic();
-			if (!IsUserDefined) break;
+			bool bIsUserDefined = static_cast<MFnAttribute>(Joint.attribute(i)).isDynamic();
+			if (!bIsUserDefined) 
+			{
+				// There are no more dynamic / user defined attributes in the range
+				break;
+			}
 
 			UserDefinedAttributeCount++;
 		}
@@ -296,9 +325,9 @@ public:
 
 	bool HasAnyAttributeChangedProperties()
 	{
-		for (int i = 0; i < UserDefinedAttributes.Num(); i++)
+		for (auto& Attribute : UserDefinedAttributes)
 		{
-			if (UserDefinedAttributes[i].HasDirtyProperties())
+			if (Attribute.HasDirtyProperties())
 			{
 				return true;
 			}
@@ -307,76 +336,95 @@ public:
 		return false;
 	}
 
+	/*
+	*	Determine if any of the attributes on the root joint has changed since last update.
+	*/
 	bool HasAttributeListChanged(TArray<FStreamHierarchy>& JointsToStream)
 	{
-		int NewRootAttributeCount = JointsToStream[0].JointObject.attributeCount();
-		if (AllRootAttributesCount != NewRootAttributeCount)
+		if (JointsToStream.Num() == 0)
+		{
+			// We have defined attributes, but no joints to stream. 
+			// Something is off, trigger "changed".
+			return (UserDefinedAttributes.Num() > 0);
+		}
+
+		MFnIkJoint& RootInStream = JointsToStream[0].JointObject;
+		if (NumAttributesOnRootJoint != RootInStream.attributeCount())
 		{
 			return true;
 		}
 		else
 		{
-			bool bHasNewUserDefinedAttributesCount = (UserDefinedAttributes.Num() != CountUserDefinedAttributes(JointsToStream[0].JointObject));
-			return bHasNewUserDefinedAttributesCount || HasAnyAttributeChangedProperties();
+			bool bNumUserAttributesChanged = (UserDefinedAttributes.Num() != NumUserDefinedAttributesOnJoint(RootInStream));
+			return bNumUserAttributesChanged || HasAnyAttributeChangedProperties();
 		}
 	}
 
-	void UpdatePropertyValues(FLiveLinkAnimationFrameData& AnimationFrameData)
+	void CopyValuesToFrameData(FLiveLinkAnimationFrameData& AnimationFrameData)
 	{
-		AnimationFrameData.MetaData.StringMetaData.Empty();
 		AnimationFrameData.PropertyValues.SetNum(0);
-		for (int i = 0; i < UserDefinedAttributes.Num(); i++)
+		for (auto& Attribute : UserDefinedAttributes)
 		{
-			if (UserDefinedAttributes[i].bRelevantForSync)
+			if (Attribute.bRelevantForStream)
 			{
-				AnimationFrameData.PropertyValues.Add(UserDefinedAttributes[i].Plug.asFloat());
-				
-				// Enable for print debug
-				//MGlobal::displayInfo(MString("LiveLink sent: ") + UserDefinedAttributes[i].Plug.partialName() + ": " + AnimationFrameData.PropertyValues.Last());
+				AnimationFrameData.PropertyValues.Add(Attribute.Value());
+				//MGlobal::displayInfo(MString("LiveLink stream: ") + Attribute.PartialName + ": " + AnimationFrameData.PropertyValues.Last());
 			}
 		}
 	}
 
+	/*
+	*	Finds all 
+	*/
 	void UpdateStaticData(TArray<FStreamHierarchy>& JointsToStream, FLiveLinkSkeletonStaticData& SkeletonStaticData)
 	{
-		AllRootAttributesCount = 0;
+		NumAttributesOnRootJoint = 0;
 		UserDefinedAttributes.SetNum(0);
 		SkeletonStaticData.PropertyNames.SetNum(0);
 
 		if (JointsToStream.Num() > 0)
 		{
-			MFnIkJoint& RootJoint = JointsToStream[0].JointObject;
-
-			AllRootAttributesCount = RootJoint.attributeCount();
-			int LastAttributeIndex  = AllRootAttributesCount - 1;
-			int StartAttributeIndex = AllRootAttributesCount - CountUserDefinedAttributes(RootJoint);
-
-			MStatus FindPlugStatus;
-			for (int i = StartAttributeIndex; i <= LastAttributeIndex; i++)
+			MFnIkJoint& RootInStream = JointsToStream[0].JointObject;
+			int NumUserAttributes = NumUserDefinedAttributesOnJoint(RootInStream);
+			if (NumUserAttributes == 0)
 			{
-				MPlug NewPlug = JointsToStream[0].JointObject.findPlug(static_cast<MFnAttribute>(JointsToStream[0].JointObject.attribute(i)).object(), FindPlugStatus);
+				return; // because there is nothing to stream
+			}
+
+			// Determine range for user defined attributes
+			NumAttributesOnRootJoint = RootInStream.attributeCount();
+			int LastAttributeId = NumAttributesOnRootJoint - 1;
+			int FirstAttributeId = NumAttributesOnRootJoint - NumUserAttributes;
+
+			// Attempt to access each user defined attribute and add each to the stream
+			MStatus FindPlugStatus;
+			for (int i = FirstAttributeId; i <= LastAttributeId; i++)
+			{
+				MFnAttribute Attribute = RootInStream.attribute(i);
+				MPlug NewPlug = RootInStream.findPlug(Attribute.object(), FindPlugStatus);
 				if (FindPlugStatus == MStatus::kSuccess)
 				{
-					UserDefinedAttributes.Add(AttributeInfo{ NewPlug, NewPlug.partialName(), IsPlugRelevantForSync(NewPlug) });
-					if (UserDefinedAttributes.Last().bRelevantForSync)
+					FAttributeInfo NewAttribute{NewPlug, NewPlug.partialName(), IsPlugRelevantForStream(NewPlug)};
+					UserDefinedAttributes.Add(NewAttribute);
+					if (NewAttribute.bRelevantForStream)
 					{
-						SkeletonStaticData.PropertyNames.Add(NewPlug.partialName().asChar());
+						SkeletonStaticData.PropertyNames.Add(NewAttribute.PartialName.asChar());
 					}
 				}
 			}
 		}
 
 		// Enable for print debug
-		//for (int i = 0; i < UserDefinedAttributes.Num(); i++)
+		//for (auto& Attribute : Attributes)
 		//{
-		//	MGlobal::displayInfo(MString("LiveLink UpdateStaticData: ") + UserDefinedAttributes[i].Name + (UserDefinedAttributes[i].bRelevantForSync? "" : " (skipped, not relevant)"));
+		//	MGlobal::displayInfo(MString("LiveLink UpdateStaticData: ") + Attribute.PartialName + (Attribute.bRelevantForStream? "" : " (not streamed)"));
 		//}
 	}
 };
 
 struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 {
-	MayaSyncedUserDefinedAttributes MayaUserDefinedAttributes;
+	FStreamedUserDefinedAttributes StreamedAttributes;
 
 	FLiveLinkStreamedJointHeirarchySubject(FName InSubjectName, MDagPath InRootPath)
 		: SubjectName(InSubjectName)
@@ -483,13 +531,15 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 			AnimationData.BoneParents.Add(ParentIndex);
 		}
 
-		MayaUserDefinedAttributes.UpdateStaticData(JointsToStream, AnimationData);
+		StreamedAttributes.UpdateStaticData(JointsToStream, AnimationData);
 		LiveLinkProvider->UpdateSubjectStaticData(SubjectName, ULiveLinkAnimationRole::StaticClass(), MoveTemp(StaticData));
 	}
 
 	virtual void OnStream(double StreamTime, int32 FrameNumber)
 	{
-		if (MayaUserDefinedAttributes.HasAttributeListChanged(JointsToStream))
+		// The user can add/remove/lock attributes in the channel box
+		// after adding the subject. Trigger a rebuild if that happens.
+		if (StreamedAttributes.HasAttributeListChanged(JointsToStream))
 		{
 			RebuildSubjectData();
 		}
@@ -498,7 +548,7 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 		FLiveLinkAnimationFrameData& AnimationData = *FrameData.Cast<FLiveLinkAnimationFrameData>();
 
 		AnimationData.Transforms.Reserve(JointsToStream.Num());
-		
+
 		TArray<MMatrix> InverseScales;
 		InverseScales.Reserve(JointsToStream.Num());
 
@@ -523,8 +573,8 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 			AnimationData.Transforms.Add(BuildUETransformFromMayaTransform(MayaSpaceJointMatrix));
 		}
 
-		MayaUserDefinedAttributes.UpdatePropertyValues(AnimationData);
 		AnimationData.WorldTime = StreamTime;
+		StreamedAttributes.CopyValuesToFrameData(AnimationData);
 		LiveLinkProvider->UpdateSubjectFrameData(SubjectName, MoveTemp(FrameData));
 	}
 
@@ -671,7 +721,7 @@ public:
 	virtual bool ShouldDisplayInUI() const { return true; }
 	virtual MString GetDisplayText() const { return MString("Prop: ") + MString(*SubjectName.ToString()) + " ( " + RootDagPath.fullPathName() + " )"; }
 
-	virtual bool ValidateSubject() const {return true;}
+	virtual bool ValidateSubject() const { return true; }
 
 	virtual void RebuildSubjectData()
 	{
@@ -715,9 +765,9 @@ private:
 	void ValidateSubjects()
 	{
 		Subjects.RemoveAll([](const TSharedPtr<IStreamedEntity>& Item)
-		{
-			return !Item->ValidateSubject();
-		});
+			{
+				return !Item->ValidateSubject();
+			});
 		RefreshUI();
 	}
 
@@ -740,7 +790,7 @@ public:
 	}
 
 	template<class SubjectType, typename... ArgsType>
-	TSharedPtr<SubjectType> AddSubjectOfType(ArgsType&&... Args)
+	TSharedPtr<SubjectType> AddSubjectOfType(ArgsType&& ... Args)
 	{
 		TSharedPtr<SubjectType> Subject = MakeShareable(new SubjectType(Args...));
 
@@ -816,7 +866,7 @@ class LiveLinkSubjectsCommand : public MPxCommand
 {
 public:
 	static void		cleanup() {}
-	static void*	creator() { return new LiveLinkSubjectsCommand(); }
+	static void* creator() { return new LiveLinkSubjectsCommand(); }
 
 	MStatus			doIt(const MArgList& args)
 	{
@@ -838,7 +888,7 @@ class LiveLinkAddSubjectCommand : public MPxCommand
 {
 public:
 	static void		cleanup() {}
-	static void*	creator() { return new LiveLinkAddSubjectCommand(); }
+	static void* creator() { return new LiveLinkAddSubjectCommand(); }
 
 	MStatus			doIt(const MArgList& args)
 	{
@@ -876,7 +926,7 @@ public:
 				CameraObject.getPath(Path);
 				LiveLinkStreamManager->AddCameraSubject(SubjectFName, Path);
 			}
-			else if(obj.hasFn(MFn::kTransform))
+			else if (obj.hasFn(MFn::kTransform))
 			{
 				MFnTransform TransformNode(obj);
 				MDagPath Path;
@@ -896,7 +946,7 @@ class LiveLinkRemoveSubjectCommand : public MPxCommand
 {
 public:
 	static void		cleanup() {}
-	static void*	creator() { return new LiveLinkRemoveSubjectCommand(); }
+	static void* creator() { return new LiveLinkRemoveSubjectCommand(); }
 
 	MStatus			doIt(const MArgList& args)
 	{
@@ -920,14 +970,14 @@ class LiveLinkConnectionStatusCommand : public MPxCommand
 {
 public:
 	static void		cleanup() {}
-	static void*	creator() { return new LiveLinkConnectionStatusCommand(); }
+	static void* creator() { return new LiveLinkConnectionStatusCommand(); }
 
 	MStatus			doIt(const MArgList& args)
 	{
 		MString ConnectionStatus("No Provider (internal error)");
 		bool bConnection = false;
 
-		if(LiveLinkProvider.IsValid())
+		if (LiveLinkProvider.IsValid())
 		{
 			if (LiveLinkProvider->HasConnection())
 			{
@@ -984,9 +1034,9 @@ void OnSceneOpen(void* client)
 
 void AllDagChangesCallback(
 	MDagMessage::DagMessage msgType,
-	MDagPath &child,
-	MDagPath &parent,
-	void *clientData)
+	MDagPath& child,
+	MDagPath& parent,
+	void* clientData)
 {
 	LiveLinkStreamManager->RebuildSubjects();
 }
@@ -1001,7 +1051,7 @@ void OnConnectionStatusChanged()
 TMap<uintptr_t, MCallbackId> PostRenderCallbackIds;
 TMap<uintptr_t, MCallbackId> ViewportDeletedCallbackIds;
 
-void OnPostRenderViewport(const MString &str, void* ClientData)
+void OnPostRenderViewport(const MString& str, void* ClientData)
 {
 	LiveLinkStreamManager->StreamSubjects();
 }
@@ -1041,7 +1091,7 @@ MStatus RefreshViewportCallbacks()
 		ClearViewportCallbacks();
 
 		static MString ListEditorPanelsCmd = "gpuCacheListModelEditorPanels";
-		
+
 		MStringArray EditorPanels;
 		ExitStatus = MGlobal::executeCommand(ListEditorPanelsCmd, EditorPanels);
 		MCHECKERROR(ExitStatus, "gpuCacheListModelEditorPanels");
@@ -1064,9 +1114,9 @@ MStatus RefreshViewportCallbacks()
 				PostRenderCallbackIds.Add(i, CallbackId);
 
 				CallbackId = MUiMessage::addUiDeletedCallback(EditorPanels[i], OnViewportClosed, reinterpret_cast<void*>(i), &Status);
-				
+
 				MREPORTERROR(Status, "MUiMessage::addUiDeletedCallback()");
-				
+
 				if (Status != MStatus::kSuccess)
 				{
 					ExitStatus = MStatus::kFailure;
@@ -1101,7 +1151,7 @@ void OnInterval(float elapsedTime, float lastTime, void* clientData)
 */
 DLLEXPORT MStatus initializePlugin(MObject MayaPluginObject)
 {
-	if(!bUEInitialized)
+	if (!bUEInitialized)
 	{
 		GEngineLoop.PreInit(TEXT("MayaLiveLinkPlugin -Messaging"));
 		ProcessNewlyLoadedUObjects();
