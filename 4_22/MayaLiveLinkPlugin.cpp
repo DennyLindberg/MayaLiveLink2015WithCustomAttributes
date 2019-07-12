@@ -231,6 +231,67 @@ struct FStreamHierarchy
 	{}
 };
 
+namespace MayaSyncedUserDefinedAttributes
+{
+	bool IsPlugRelevantForSync(MPlug Plug)
+	{
+		/*
+			Warning: MFnAttribute.isKeyable() and MPlug.isKeyable() do NOT return the same results.
+			Always check the MPlug properties instead of the MFnAttribute.
+			MPlug properties behave like getAttr in MEL.
+		*/
+		if (Plug.isLocked())
+		{
+			return false;
+		}
+		else
+		{
+			return Plug.isKeyable() || Plug.isChannelBoxFlagSet();
+		}
+	}
+
+	int CountUserDefinedAttributes(MFnIkJoint& RootJointObject)
+	{
+		int TotalAttributeCount = RootJointObject.attributeCount();
+
+		int UserDefinedAttributeCount = 0;
+		int LastAttributeIndex = TotalAttributeCount - 1;
+		for (int i = LastAttributeIndex; i >= 0; i--)
+		{
+			bool IsUserDefined = static_cast<MFnAttribute>(RootJointObject.attribute(i)).isDynamic();
+			if (!IsUserDefined) break;
+
+			UserDefinedAttributeCount++;
+		}
+
+		return UserDefinedAttributeCount;
+	}
+
+	void UpdatePropertyCurves(MFnIkJoint& RootJoint, TArray<FLiveLinkCurveElement>& Curves)
+	{
+		int NumUserAttributes = CountUserDefinedAttributes(RootJoint);
+
+		int AllRootAttributesCount = RootJoint.attributeCount();
+		int LastAttributeIndex  = AllRootAttributesCount - 1;
+		int StartAttributeIndex = AllRootAttributesCount - CountUserDefinedAttributes(RootJoint);
+
+		MStatus FindPlugStatus;
+		for (int i = StartAttributeIndex; i <= LastAttributeIndex; i++)
+		{
+			MPlug NewPlug = RootJoint.findPlug(static_cast<MFnAttribute>(RootJoint.attribute(i)).object(), FindPlugStatus);
+			if (FindPlugStatus == MStatus::kSuccess)
+			{
+				if (IsPlugRelevantForSync(NewPlug))
+				{
+					int index = Curves.AddDefaulted();
+					Curves[index].CurveName  = FName(NewPlug.partialName().asChar());
+					Curves[index].CurveValue = NewPlug.asFloat();
+				}
+			}
+		}
+	}
+};
+
 struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 {
 	FLiveLinkStreamedJointHeirarchySubject(FName InSubjectName, MDagPath InRootPath)
@@ -333,56 +394,6 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 		LiveLinkProvider->UpdateSubject(SubjectName, JointNames, JointParents);
 	}
 
-	int CountUserDefinedAttributes(MFnIkJoint& RootJointObject)
-	{
-		int TotalAttributeCount = RootJointObject.attributeCount();
-
-		int UserDefinedAttributeCount = 0;
-		int LastAttributeIndex = TotalAttributeCount - 1;
-		for (int i = LastAttributeIndex; i >= 0; i--)
-		{
-			bool IsUserDefined = static_cast<MFnAttribute>(RootJointObject.attribute(i)).isDynamic();
-			if (!IsUserDefined) break;
-
-			UserDefinedAttributeCount++;
-		}
-
-		return UserDefinedAttributeCount;
-	}
-
-	void UpdateCustomCurvesFromRootJoint(TArray<FLiveLinkCurveElement>& Curves)
-	{
-		if (JointsToStream.Num() == 0)
-		{
-			return;
-		}
-
-		MFnIkJoint& RootJoint = JointsToStream[0].JointObject;
-		int NumUserAttributes = CountUserDefinedAttributes(RootJoint);
-
-		int AllRootAttributesCount = RootJoint.attributeCount();
-		int LastAttributeIndex  = AllRootAttributesCount - 1;
-		int StartAttributeIndex = AllRootAttributesCount - CountUserDefinedAttributes(RootJoint);
-
-		MStatus FindPlugStatus;
-		for (int i = StartAttributeIndex; i <= LastAttributeIndex; i++)
-		{
-			MPlug NewPlug = RootJoint.findPlug(static_cast<MFnAttribute>(RootJoint.attribute(i)).object(), FindPlugStatus);
-			if (FindPlugStatus == MStatus::kSuccess)
-			{
-				if (!NewPlug.isLocked())
-				{
-					if (NewPlug.isKeyable() || NewPlug.isChannelBoxFlagSet())
-					{
-						int index = Curves.AddDefaulted();
-						Curves[index].CurveName  = FName(NewPlug.partialName().asChar());
-						Curves[index].CurveValue = NewPlug.asFloat();
-					}
-				}
-			}
-		}
-	}
-
 	virtual void OnStream(double StreamTime, int32 FrameNumber)
 	{
 		TArray<FTransform> JointTransforms;
@@ -418,7 +429,7 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 		}
 
 		TArray<FLiveLinkCurveElement> Curves;
-		UpdateCustomCurvesFromRootJoint(Curves);
+		MayaSyncedUserDefinedAttributes::UpdatePropertyCurves(JointsToStream[0].JointObject, Curves);
 		LiveLinkProvider->UpdateSubjectFrame(SubjectName, JointTransforms, Curves, StreamTime);
 	}
 
