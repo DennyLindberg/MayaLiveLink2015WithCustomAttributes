@@ -24,7 +24,11 @@ IMPLEMENT_APPLICATION(MayaLiveLinkPlugin, "MayaLiveLinkPlugin");
 
 
 // Maya includes
-//#define DWORD BananaFritters
+#ifndef BananaFritters
+#define BananaFritters unsigned int
+#endif
+
+#define DWORD BananaFritters
 #include <maya/MObject.h>
 #include <maya/MGlobal.h>
 #include <maya/MFnPlugin.h>
@@ -56,7 +60,7 @@ IMPLEMENT_APPLICATION(MayaLiveLinkPlugin, "MayaLiveLinkPlugin");
 #include <maya/MUiMessage.h>
 #include <maya/MSyntax.h>
 #include <maya/MArgDatabase.h>
-//#undef DWORD
+#undef DWORD
 
 #define MCHECKERROR(STAT,MSG)                   \
     if (!STAT) {                                \
