@@ -80,6 +80,9 @@ MSpace::Space G_TransformSpace = MSpace::kTransform;
 
 bool bUEInitialized = false;
 
+// User interface setting that applies a transformation to the root object so that the Subject is facing up in UE4.
+bool bCorrectForYUp = false;
+
 // Execute the python command to refresh our UI
 void RefreshUI()
 {
@@ -296,6 +299,29 @@ namespace MayaSyncedUserDefinedAttributes
 	}
 };
 
+MString StripMayaNamespace(const MString& name)
+{
+	std::string stdname = name.asChar();
+	int charindex = stdname.rfind(":");
+	if (charindex != std::string::npos)
+	{
+		charindex++;
+		return stdname.substr(charindex).c_str();
+	}
+
+	return name;
+}
+
+void ApplyCoordinateSystemCorrection(TArray<FTransform>& JointTransforms)
+{
+	if (bCorrectForYUp && JointTransforms.Num() > 0)
+	{
+		FTransform OffsetTransform;
+		OffsetTransform.SetRotation(FQuat::MakeFromEuler(FVector(90, 0.0f, 0.0f)));
+		JointTransforms[0] = OffsetTransform * JointTransforms[0];
+	}
+}
+
 struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 {
 	FLiveLinkStreamedJointHeirarchySubject(FName InSubjectName, MDagPath InRootPath)
@@ -388,8 +414,7 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 
 			//MGlobal::displayInfo(MString("Iter: ") + JointPath.fullPathName() + JointIterator.depth());
 
-			FName JointName(JointObject.name().asChar());
-
+			FName JointName(StripMayaNamespace(JointObject.name()).asChar());
 			JointsToStream.Add(FStreamHierarchy(JointName, JointPath, ParentIndex));
 			JointNames.Add(JointName);
 			JointParents.Add(ParentIndex);
@@ -429,8 +454,11 @@ struct FLiveLinkStreamedJointHeirarchySubject : IStreamedEntity
 			//OutputRotation(GetJointOrientation(jointObject, RotOrder));
 			//OutputRotation(TempJointMatrix);
 
+
 			JointTransforms.Add(BuildUETransformFromMayaTransform(MayaSpaceJointMatrix));
 		}
+
+		ApplyCoordinateSystemCorrection(JointTransforms);
 
 		TArray<FLiveLinkCurveElement> Curves;
 		MayaSyncedUserDefinedAttributes::UpdatePropertyCurves(JointsToStream[0].JointObject, Curves);
@@ -815,6 +843,31 @@ public:
 	}
 };
 
+const MString LiveLinkSetOptionCorrectForYUpCommandName("LiveLinkSetOptionCorrectForYUp");
+
+class LiveLinkSetOptionCorrectForYUpCommand : public MPxCommand
+{
+public:
+	static void	 cleanup() {}
+	static void* creator() { return new LiveLinkSetOptionCorrectForYUpCommand(); }
+
+	MStatus	doIt(const MArgList& args)
+	{
+		MSyntax Syntax;
+		Syntax.addArg(MSyntax::kString);
+
+		MArgDatabase argData(Syntax, args);
+
+		argData.getCommandArgument(0, bCorrectForYUp);
+		MGlobal::displayInfo(MString("bCorrectForYUp: ") + bCorrectForYUp);
+
+		LiveLinkStreamManager->RebuildSubjects();
+		LiveLinkStreamManager->StreamSubjects();
+
+		return MS::kSuccess;
+	}
+};
+
 void OnForceChange(MTime& time, void* clientData)
 {
 	LiveLinkStreamManager->StreamSubjects();
@@ -1021,6 +1074,7 @@ DLLEXPORT MStatus initializePlugin(MObject MayaPluginObject)
 	MayaPlugin.registerCommand(LiveLinkAddSubjectCommandName, LiveLinkAddSubjectCommand::creator);
 	MayaPlugin.registerCommand(LiveLinkRemoveSubjectCommandName, LiveLinkRemoveSubjectCommand::creator);
 	MayaPlugin.registerCommand(LiveLinkConnectionStatusCommandName, LiveLinkConnectionStatusCommand::creator);
+	MayaPlugin.registerCommand(LiveLinkSetOptionCorrectForYUpCommandName, LiveLinkSetOptionCorrectForYUpCommand::creator);
 
 	// Print to Maya's output window, too!
 	UE_LOG(LogBlankMayaPlugin, Display, TEXT("MayaLiveLinkPlugin initialized"));
@@ -1056,6 +1110,7 @@ DLLEXPORT MStatus uninitializePlugin(MObject MayaPluginObject)
 	MayaPlugin.deregisterCommand(LiveLinkAddSubjectCommandName);
 	MayaPlugin.deregisterCommand(LiveLinkRemoveSubjectCommandName);
 	MayaPlugin.deregisterCommand(LiveLinkConnectionStatusCommandName);
+	MayaPlugin.deregisterCommand(LiveLinkSetOptionCorrectForYUpCommandName);
 
 	if (ConnectionStatusChangedHandle.IsValid())
 	{
