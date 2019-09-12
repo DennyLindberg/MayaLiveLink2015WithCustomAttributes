@@ -1,3 +1,8 @@
+# Outdated
+This repo is outdated. Go to the [MayaLiveLink fork](https://github.com/DennyLindberg/MayaLiveLink) of the official repo [MayaLiveLink](https://github.com/DennyLindberg/MayaLiveLink) if you want to find the latest code changes.
+
+The files in ```4_23/Binaries``` is up-to-date however and was compiled with the fork.
+
 # About this repository
 This is a "patch" for Epic's official Maya Live Link plugin.
 
